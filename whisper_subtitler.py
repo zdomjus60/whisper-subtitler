@@ -1,29 +1,29 @@
-# Importa le librerie necessarie. Sostituisci `whisper` con `faster_whisper`
+# Import the required libraries. Replaced `whisper` with `faster_whisper`
 import time
 import argparse
 from faster_whisper import WhisperModel
 from datetime import timedelta
 import subprocess
 import os
-# Non abbiamo bisogno di importare torch per controllare la disponibilità di CUDA
-# dal momento che useremo un'altra logica.
+# We do not need to import torch to check CUDA availability
+# since we use a different logic.
 # import torch
 
-# Non serve più questa funzione, la logica di `faster-whisper` è diversa
-# e non si basa sul check di CUDA. La gestione del dispositivo è implicita
-# o specificata nella creazione del modello.
+# This function is no longer needed: faster-whisper handles CUDA checks
+# differently and does not rely on this logic. Device handling is implicit
+# or specified when creating the model.
 # def check_cuda_availability():
-#     print("Verifica disponibilità CUDA...")
+#     print("Checking CUDA availability...")
 #     if torch.cuda.is_available():
-#         print("CUDA è disponibile. Utilizzo della GPU.")
+#         print("CUDA is available. Using the GPU.")
 #         device = "cuda"
 #     else:
-#         print("CUDA non è disponibile. Utilizzo della CPU.")
+#         print("CUDA is not available. Using the CPU.")
 #         device = "cpu"
 #     return device
 
 def extract_audio(video_path, audio_path):
-    print("Inizio estrazione audio...")
+    print("Starting audio extraction...")
     command = [
         'ffmpeg',
         '-i',
@@ -35,7 +35,7 @@ def extract_audio(video_path, audio_path):
         audio_path
     ]
     subprocess.run(command, check=True)
-    print(f"Estrazione audio completata. File audio salvato in: {audio_path}")
+    print(f"Audio extraction completed. Audio file saved to: {audio_path}")
 
 def format_timestamp(seconds):
     """Formats seconds into SRT timestamp format (HH:MM:SS,ms)."""
@@ -47,73 +47,138 @@ def format_timestamp(seconds):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 def transcribe_audio(audio_path, language='en', model_name='small'):
-    print("Inizio trascrizione audio con timestamp a livello di parola...")
+    print("Starting audio transcription with word-level timestamps...")
     try:
-        # --- MODIFICA CRUCIALE PER FASTER-WHISPER ---
-        # Sostituisci il caricamento del modello di OpenAI Whisper
-        # con quello di faster-whisper. Usiamo device="cpu" e
-        # compute_type="int8" per sfruttare le ottimizzazioni Intel.
+        # --- KEY CHANGE FOR FASTER-WHISPER ---
+        # Replace the OpenAI Whisper model loading with faster-whisper.
+        # We use device="cpu" and compute_type="int8" to take advantage
+        # of the Intel optimizations.
         model = WhisperModel(model_name, device="cpu", compute_type="int8")
         
-        print("Modello faster-whisper caricato e ottimizzato.")
+        print("Faster-whisper model loaded and optimized.")
         
-        # faster-whisper non ha bisogno di `options` e `transcribe_options`
-        # in questo modo. L'API è più semplice.
-        # word_timestamps è abilitato di default con un'opzione nel metodo transcribe.
+        # faster-whisper does not need `options` and `transcribe_options`
+        # like this. The API is simpler.
+        # word_timestamps is enabled via an option in the transcribe method.
         segments, info = model.transcribe(audio_path, language=language, beam_size=5, word_timestamps=True)
         
-        print("Trascrizione completata con timestamp a livello di parola.")
+        print("Transcription completed with word-level timestamps.")
         
-        # faster-whisper restituisce un generatore, che è ciò che ci serve.
-        # Lo ritorniamo direttamente.
+        # faster-whisper returns a generator, which is exactly what we need.
+        # We return it directly.
         return segments
     except Exception as e:
-        print(f"Errore durante la trascrizione: {e}")
+        print(f"Error during transcription: {e}")
         return []
 
-def write_srt(segments, srt_path):
-    print("Inizio scrittura file SRT con timestamp a livello di parola...")
+def _is_wide_char(ch):
+    """True for CJK / fullwidth characters that render ~2 columns wide."""
+    cp = ord(ch)
+    if 0x1100 <= cp <= 0x11FF:
+        return True
+    if 0x2E80 <= cp <= 0x303F:
+        return True
+    if 0x3040 <= cp <= 0x30FF:
+        return True
+    if 0x3400 <= cp <= 0x4DBF:
+        return True
+    if 0x4E00 <= cp <= 0x9FFF:
+        return True
+    if 0xA960 <= cp <= 0xA97F:
+        return True
+    if 0xAC00 <= cp <= 0xD7A3:
+        return True
+    if 0xF900 <= cp <= 0xFAFF:
+        return True
+    if 0xFE30 <= cp <= 0xFE4F:
+        return True
+    if 0xFF00 <= cp <= 0xFFEF:
+        return True
+    return False
+
+
+def _char_width(ch):
+    return 2 if _is_wide_char(ch) else 1
+
+
+def build_line(parts):
+    """Join word tokens into a subtitle line, keeping CJK characters together."""
+    out = parts[0]
+    for part in parts[1:]:
+        prev_ch = out[-1]
+        cur_ch = part[0]
+        if _is_wide_char(prev_ch) and _is_wide_char(cur_ch):
+            out += part
+        else:
+            out += " " + part
+    return out
+
+
+def write_srt(segments, srt_path, max_width=42):
+    print("Writing SRT file with word-level timestamps...")
     
-    # faster-whisper restituisce i segmenti in modo leggermente diverso.
-    # L'output è un generatore, quindi il tuo ciclo `for` funzionerà,
-    # ma la struttura interna dei segmenti è diversa.
-    # Adattiamo il codice di scrittura in base alla nuova struttura.
+    # faster-whisper returns segments in a slightly different way.
+    # The output is a generator, so your `for` loop will work,
+    # but the internal segment structure is different.
+    # We adapt the writing logic to the new structure.
     with open(srt_path, 'w') as srt_file:
         segment_idx = 1
         
-        # `segments` è un generatore, quindi lo iteriamo
+        # `segments` is a generator, so we iterate over it
         for segment in segments:
-            # I segmenti di faster-whisper hanno direttamente l'attributo `words`
+            # faster-whisper segments have a `words` attribute directly
             if not segment.words:
                 continue
 
-            current_line_words = []
-            current_line_start = None
-            current_line_end = None
+            # Lines are sized by display width (CJK characters count as two
+            # columns) so that space-less scripts are readable too.
+            line_parts = []
+            line_start = None
+            line_end = None
+            line_width = 0
 
-            # Qui iteriamo sugli oggetti `Word` di faster-whisper
+            # Here we iterate over the `Word` objects of faster-whisper
             for i, word_info in enumerate(segment.words):
                 word_text = word_info.word.strip()
                 if not word_text:
                     continue
 
-                if current_line_start is None:
-                    current_line_start = word_info.start
+                if line_start is None:
+                    line_start = word_info.start
 
-                current_line_words.append(word_text)
-                current_line_end = word_info.end
+                sep_cost = 0
+                if line_parts:
+                    prev_ch = line_parts[-1][-1]
+                    cur_ch = word_text[0]
+                    sep_cost = 0 if (_is_wide_char(prev_ch) and _is_wide_char(cur_ch)) else 1
+                word_width = sum(_char_width(c) for c in word_text)
 
-                # Il resto della tua logica per la scrittura delle righe rimane
-                if len(current_line_words) >= 5 or i == len(segment.words) - 1:
+                if line_parts and line_width + sep_cost + word_width > max_width:
                     srt_file.write(f"{segment_idx}\n")
-                    srt_file.write(f"{format_timestamp(current_line_start)} --> {format_timestamp(current_line_end)}\n")
-                    srt_file.write(f"{ ' '.join(current_line_words)}\n\n")
+                    srt_file.write(f"{format_timestamp(line_start)} --> {format_timestamp(line_end)}\n")
+                    srt_file.write(f"{build_line(line_parts)}\n\n")
                     segment_idx += 1
-                    current_line_words = []
-                    current_line_start = None
-                    current_line_end = None
+                    line_parts = []
+                    line_start = word_info.start
+                    line_width = 0
+                    sep_cost = 0
 
-    print(f"File SRT scritto in {srt_path}.")
+                line_parts.append(word_text)
+                line_width += sep_cost + word_width
+                line_end = word_info.end
+
+                # The rest of the line-writing logic stays the same
+                if i == len(segment.words) - 1:
+                    srt_file.write(f"{segment_idx}\n")
+                    srt_file.write(f"{format_timestamp(line_start)} --> {format_timestamp(line_end)}\n")
+                    srt_file.write(f"{build_line(line_parts)}\n\n")
+                    segment_idx += 1
+                    line_parts = []
+                    line_start = None
+                    line_end = None
+                    line_width = 0
+
+    print(f"SRT file written to {srt_path}.")
 
 def main(video_path, srt_path, language='en', model_name='small', audio_path='audio.mp3'):
     extract_audio(video_path, audio_path)
@@ -121,9 +186,9 @@ def main(video_path, srt_path, language='en', model_name='small', audio_path='au
     if segments:
         write_srt(segments, srt_path)
     else:
-        print("Nessun segmento di testo trovato. Verifica l'audio o i parametri di trascrizione.")
+        print("No text segments found. Check the audio or the transcription parameters.")
     os.remove(audio_path)
-    print("Pulizia completata.")
+    print("Cleanup completed.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe audio from video and generate SRT subtitles.")
@@ -134,11 +199,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    print("--- Avvio del processo di trascrizione ---")
-    start_time = time.time()  # <--- Registra il tempo di inizio
+    print("--- Starting the transcription process ---")
+    start_time = time.time()  # <--- Record the start time
 
     main(args.video_path, args.srt_path, args.language, args.model)
-    end_time = time.time()    # <--- Registra il tempo di fine
+    end_time = time.time()    # <--- Record the end time
     duration = end_time - start_time
-    print(f"--- Processo completato in {duration:.2f} secondi ---")
-
+    print(f"--- Process completed in {duration:.2f} seconds ---")

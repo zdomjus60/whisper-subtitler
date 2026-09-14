@@ -1,0 +1,57 @@
+# --- Video files ---
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+*.flv
+*.wmv
+*.m4v
+*.ts
+*.mpg
+*.mpeg
+*.ogv
+*.3gp
+
+# --- Subtitle files ---
+*.srt
+*.sub
+*.ass
+*.ssa
+*.vtt
+
+# --- Audio files ---
+*.mp3
+*.wav
+*.aac
+*.flac
+*.m4a
+*.oga
+
+# --- Temporary audio extracted during transcription ---
+audio.mp3
+audio.wav
+
+# --- Build artifacts (Windows package) ---
+build/
+dist/
+*.zip
+*.spec
+WhisperSubtitler_Setup.exe
+__pycache__/
+*.pyc
+
+# --- Whisper models (downloaded at runtime) ---
+models/
+
+# --- Virtual environments ---
+venv/
+.venv/
+
+# --- Local translation test environment ---
+.test_translate/
+
+# --- Local NSIS cache, session logs, screenshots ---
+.local/
+session-*.md
+Screenshot*.png

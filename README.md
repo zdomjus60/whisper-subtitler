@@ -1,67 +1,118 @@
-# Video to SRT Transcription Script with Faster-Whisper
+# Whisper Subtitler
 
-This Python script automates the process of extracting audio from a video file, transcribing it into text, and creating a subtitle file in SRT (`.srt`) format with precise word-level timestamps.
+Generate `.srt` subtitle files from any video using speech recognition (Whisper),
+optimized for CPU. Available as:
 
-It uses `ffmpeg` for audio/video processing and `faster-whisper` for efficient, CPU-optimized transcription.
+- a command-line Python script (`whisper_subtitler.py`) for Debian/Linux, and
+- a ready-to-run **portable Windows app** (`WhisperSubtitler.exe`) bundled with
+  Python, ffmpeg and faster-whisper, ready for non-technical users.
 
-## Prerequisites
+---
 
-Before running the script, make sure you have the following software installed:
+## Part 1 — Windows portable app (all-in-one)
 
-1.  **Python 3**: If not already installed, download it from the [official website](https://www.python.org/).
-2.  **FFmpeg**: This is a crucial component for audio extraction.
-    *   On Debian/Ubuntu-based systems, you can install it with the following command:
-        ```bash
-        sudo apt update && sudo apt install ffmpeg
-        ```
+### What the end user gets
 
-## Installation
+Two distribution options, both produced by the build:
 
-1.  **Create a virtual environment** (recommended to isolate project dependencies):
-    ```bash
-    python3 -m venv whisper-env
-    source whisper-env/bin/activate
-    ```
+- **`WhisperSubtitler_Setup.exe`** — a self-installing setup wizard.
+  Recommended for non-technical users: double-click, press Next, and a shortcut
+  is created on the Desktop and in the Start Menu. No zip knowledge required.
+- `WhisperSubtitler.zip` (~150 MB) — portable folder, extract and run.
 
-2.  **Install the necessary Python libraries**: The main dependency is `faster-whisper`. `pip` will automatically handle all other required libraries.
-    ```bash
-    pip install faster-whisper
-    ```
+### End-user experience
 
-## Usage Guide
+1. Double-click **`WhisperSubtitler_Setup.exe`**.
+2. Follow the wizard (press *Next*). The program installs for the
+   current user in `%LOCALAPPDATA%\Whisper Subtitler` (no administrator
+   rights needed).
+3. A shortcut appears on the **Desktop**: double-click **Whisper Subtitler**.
+4. A splash screen appears, then the main window.
+5. Choose the video file and the output subtitle path. The automatic output
+   name includes the selected language, e.g. `video.it.srt`; with
+   *Auto-detect* the name uses the actually detected language
+   (e.g. `video.en.srt`).
+6. Choose the **subtitle (target) language** (`Automatic detection`, English,
+   Italiano, Français, Español, Deutsch, Português, Nederlands, Polski,
+   Русский, Türkçe, Ελληνικά, العربية, Hindi, 中文, 日本語, 한국어) and the
+   model size (`tiny`, `base`, `small`, `medium`, `large-v3`).
+7. Click **Generate SRT Subtitles** and wait. The log panel shows each step.
+8. The `.srt` file is written next to the video.
 
-Run the script from your terminal, providing the path to your video file and the desired output SRT file, along with optional parameters for language and model.
+### Translation
+
+The selected language in step 6 is the **language of the generated subtitles**:
+
+- The speech is always detected automatically.
+- If the selected language differs from the detected one, the subtitles are
+  translated **locally** with Argos Translate. Direct pairs are used when
+  available, otherwise the text is pivoted through English
+  (e.g. `it → fr` is performed as `it → en → fr`).
+- Translation packages are **downloaded on demand on first use** (only the
+  languages you actually use), and stored in the `translations/` folder in the
+  app directory, so everything stays offline afterwards.
+
+To remove the program, use *Uninstall* from the Start Menu (or Uninstall.exe).
+
+Requirements: **Windows 10/11 64-bit** and internet **on the first run only**
+(to download the Whisper model and any translation package actually used; both
+are stored in the app directory). No installation, no admin rights, no PATH
+setup.
+
+### Building the Windows package (on Debian)
+
+The build fully runs on a Debian machine. Requirements:
+
+- `curl`, `unzip`
+- `x86_64-w64-mingw32-gcc` (mingw-w64)
+- `python3` with pip
+- `wine` (to extract Tcl/Tk from the official `tcltk.msi`)
+- `makensis` + NSIS data files (`nsis`, `nsis-common` Debian packages, or the
+  extracted files with `NSISDIR` pointing at the `usr/share/nsis` folder) to
+  build the installer; if missing, the installer is skipped
 
 ```bash
-python whisper_subtitler.py <video_path> <srt_path> [--language <lang_code>] [--model <model_name>]
+./build_package.sh
 ```
 
-**Arguments:**
+Output:
 
-*   `<video_path>`: **Required.** Path to the input video file (e.g., `my_video.mp4`).
-*   `<srt_path>`: **Required.** Path to the output SRT subtitle file (e.g., `my_video.srt`).
-*   `--language <lang_code>`: Optional. Language of the audio in the video (e.g., `en` for English, `it` for Italian, `fr` for French). Default is `en`.
-*   `--model <model_name>`: Optional. Faster-Whisper model to use (e.g., `tiny`, `base`, `small`, `medium`, `large`). Default is `small`.
+- `dist/WhisperSubtitler/` — ready-to-run folder
+- `WhisperSubtitler.zip` — distributable archive
+- `WhisperSubtitler_Setup.exe` — self-installing wizard (if NSIS is present)
 
-**Examples:**
+---
 
-*   **Transcribe an English video to an English SRT:**
-    ```bash
-    python whisper_subtitler.py "path/to/your/video.mp4" "output.srt" --language en
-    ```
-*   **Transcribe an Italian video using the 'medium' model:**
-    ```bash
-    python whisper_subtitler.py "path/to/your/italian_video.mp4" "italian_output.srt" --language it --model medium
-    ```
+## Part 2 — Command-line script (`whisper_subtitler.py`)
 
-**Result:**
+The original Linux script, kept for completeness and as reference.
 
-Upon completion, you will find the generated `.srt` file at the specified `srt_path`. The script will also take care of deleting the temporary audio file created during the process.
+### Prerequisites
 
-## How it Works
+```bash
+sudo apt update && sudo apt install ffmpeg
+python3 -m venv whisper-env && source whisper-env/bin/activate
+pip install faster-whisper
+```
 
-The script follows these steps:
-1.  **Audio Extraction**: It uses `ffmpeg` to extract the audio track from the video file and temporarily save it as `audio.mp3`.
-2.  **Transcription**: It loads the `small` model of `faster-whisper` (optimized for CPU) and transcribes the audio. It specifically requests word-level timestamps for greater accuracy.
-3.  **SRT Formatting**: The text segments and their corresponding timestamps are formatted according to the SRT standard, grouping approximately 5 words per line for better readability.
-4.  **Cleanup**: The temporary audio file (`audio.mp3`) is deleted at the end of the process.
+### Usage
+
+```bash
+python whisper_subtitler.py <video_path> <srt_path> [--language <code>] [--model <name>]
+```
+
+Example:
+
+```bash
+python whisper_subtitler.py movie.mp4 movie.srt --language en --model small
+```
+
+The script (and the Windows app) follow the same pipeline:
+
+1. Extract the audio track with ffmpeg.
+2. Transcribe it with faster-whisper (CPU, `int8`), requesting word-level
+   timestamps.
+3. Write the SRT file, sizing each line to ~42 display columns. CJK scripts
+   (Japanese, Chinese, Korean) are joined without spaces so they stay
+   readable even though Whisper emits character-level words.
+4. Delete the temporary audio file.
