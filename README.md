@@ -3,9 +3,11 @@
 Generate `.srt` subtitle files from any video using speech recognition (Whisper),
 optimized for CPU. Available as:
 
-- a command-line Python script (`whisper_subtitler.py`) for Debian/Linux, and
+- a command-line Python script (`whisper_subtitler.py`) for Debian/Linux,
 - a ready-to-run **portable Windows app** (`WhisperSubtitler.exe`) bundled with
-  Python, ffmpeg and faster-whisper, ready for non-technical users.
+  Python, ffmpeg and faster-whisper, ready for non-technical users, and
+- a ready-to-run **macOS app** (`Whisper Subtitler.app` / `.dmg`) bundled with
+  Python, ffmpeg and faster-whisper for macOS 10.15+ (Intel).
 
 ---
 
@@ -81,6 +83,11 @@ Output:
 - `WhisperSubtitler.zip` — distributable archive
 - `WhisperSubtitler_Setup.exe` — self-installing wizard (if NSIS is present)
 
+The same build can be run in the cloud from the **Actions → Build Windows
+package** workflow, which executes `build_package.sh` inside a Debian container
+and uploads `WhisperSubtitler_Setup.exe` / `WhisperSubtitler.zip` as artifacts
+(and attaches them to a release when a tag is given).
+
 ---
 
 ## Part 2 — Command-line script (`whisper_subtitler.py`)
@@ -116,3 +123,52 @@ The script (and the Windows app) follow the same pipeline:
    (Japanese, Chinese, Korean) are joined without spaces so they stay
    readable even though Whisper emits character-level words.
 4. Delete the temporary audio file.
+
+---
+
+## Part 3 — macOS app (all-in-one)
+
+A py2app build of the same GUI (`whisper_gui.pyw`), shipped as
+**`WhisperSubtitler_v2.0_macOS.dmg`** in the releases. It bundles Python,
+a static `ffmpeg` and all the transcription/translation dependencies, so no
+system Python or Homebrew is required at runtime.
+
+### End-user experience
+
+1. Open `WhisperSubtitler_v2.0_macOS.dmg` and drag **Whisper Subtitler**
+   onto the *Applications* alias.
+2. Launch it from *Applications*. The first time, macOS may warn about an
+   unidentified developer: right-click the app and choose **Open** → **Open**.
+3. Pick the video, the subtitle language and the model, then generate the
+   `.srt`, exactly like the Windows app.
+
+Whisper models and Argos translation packages are stored in
+`~/Library/Application Support/Whisper Subtitler/`, so the app can live in
+`/Applications` and works offline afterwards. A full traceback of any failure
+is written to `~/Library/Application Support/Whisper Subtitler/error.log`.
+
+Requirements: **macOS 10.15+ (Intel x86_64)**, internet on the first run only.
+
+### Building the macOS package (on macOS)
+
+The build runs on the Mac itself (an Intel Hackintosh in practice). It needs:
+
+- macOS 10.15+ with Xcode Command Line Tools (`xcode-select --install`)
+- a **framework Python 3.11 or 3.12** (`python.org` or Homebrew; 3.13+ lacks
+  macOS x86_64 wheels for `ctranslate2`/PyAV)
+- `brew install python-tk@3.12` if tkinter is missing
+
+```bash
+tools/build_mac.sh
+```
+
+Outputs:
+
+- `mac/dist/Whisper Subtitler.app` — the drag-and-drop app
+- `mac/dist/WhisperSubtitler_Mac.dmg` — the installer image
+
+The script patches `argostranslate` (lazy stanza import) and `faster_whisper`
+(ffmpeg-based decoding, no PyAV) at build time, bundles a static `ffmpeg`, and
+ad-hoc codesigns the bundle. See `mac/setup.py` for the exact py2app options
+and the list of dependencies that must be declared explicitly (py2app does not
+follow lazy/conditional pure-Python imports).

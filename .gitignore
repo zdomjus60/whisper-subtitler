@@ -41,6 +41,16 @@ WhisperSubtitler_Setup.exe
 __pycache__/
 *.pyc
 
+# --- Build artifacts (macOS package) ---
+mac/build/
+mac/dist/
+mac/dmg_stage/
+mac/ffmpeg_mac/
+mac/whisper_gui.py
+mac/.venv-mac/
+*.dmg
+.DS_Store
+
 # --- Whisper models (downloaded at runtime) ---
 models/
 
