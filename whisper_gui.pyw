@@ -3,17 +3,55 @@
 
 import os
 import queue
+import re
 import shutil
+import sys
 import tempfile
 import threading
 import subprocess
 from datetime import timedelta
 
+if sys.platform == "darwin":
+    # On Hackintoshes the shell/launchd locale is often ASCII-only (C/POSIX).
+    # In that case any `open()`/read() without an explicit encoding decodes
+    # UTF-8 as ASCII and crashes with "'ascii' codec can't decode byte ...".
+    # The old guard (`getfilesystemencodeerrors() != "surrogateescape"`) never
+    # fired on macOS because that value is ALWAYS "surrogateescape" there, so
+    # the locale fix was silently skipped.  On Python 3.11+ calling setlocale
+    # at runtime DOES change what open() uses as the default text encoding, so
+    # we force a UTF-8 locale unconditionally here.
+    import locale
+    for _enc in ("it_IT.UTF-8", "en_US.UTF-8", "C.UTF-8"):
+        try:
+            locale.setlocale(locale.LC_ALL, _enc)
+            break
+        except locale.Error:
+            continue
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(APP_DIR, "models")
+# Build marker so the user can tell the fixed bundle apart from old ones.
+APP_VERSION = "2.0"
+
+if sys.platform == "darwin":
+    # Inside a py2app bundle RESOURCEPATH points at Contents/Resources.
+    APP_DIR = os.environ.get("RESOURCEPATH", os.path.dirname(os.path.abspath(__file__)))
+    # Keep runtime data (models, translations) in the user's Library so the
+    # app stays usable whether the .app sits in /Applications or elsewhere.
+    _DATA_DIR = os.path.join(
+        os.path.expanduser("~"), "Library", "Application Support", "Whisper Subtitler")
+    os.makedirs(_DATA_DIR, exist_ok=True)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    _DATA_DIR = APP_DIR
+
+MODELS_DIR = os.path.join(_DATA_DIR, "models")
 
 
 def default_dialogs_dir():
@@ -42,6 +80,8 @@ ACCENT = "#5b8def"
 ACCENT_ACTIVE = "#7aa2f7"
 ACCENT_DISABLED = "#3a558f"
 GOLD = "#e6b84c"
+
+FONT_FAMILY = "Helvetica Neue" if sys.platform == "darwin" else "Segoe UI"
 
 os.environ.setdefault("HUGGINGFACE_HUB_DISABLE_PROGRESS_BARS", "1")
 
@@ -78,16 +118,44 @@ VIDEO_EXTENSIONS = (
     ".m4v", ".ts", ".mpg", ".mpeg", ".ogg", ".ogv",
 )
 
+# Progress phases (0..1).  Transcription and translation fill a band
+# while they run; the small steps sit at fixed percentages.
+P_EXTRACT = 0.05
+P_MODEL = 0.10
+P_TRANS_START = 0.15
+P_TRANS_END = 0.80
+P_BUILD = 0.82
+P_TRANSLATE_START = 0.85
+P_TRANSLATE_END = 0.97
+P_WRITE = 0.98
+
 
 def find_ffmpeg():
     """Return the ffmpeg executable bundled with the app, or one found on PATH."""
     for candidate in (
+        os.path.join(APP_DIR, "ffmpeg"),
         os.path.join(APP_DIR, "ffmpeg", "ffmpeg.exe"),
         os.path.join(APP_DIR, "ffmpeg", "ffmpeg"),
     ):
         if os.path.isfile(candidate):
             return candidate
     return shutil.which("ffmpeg")
+
+
+def get_audio_duration(ffmpeg, audio_path):
+    """Return the media duration in seconds, or *None* on failure."""
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-i", audio_path], capture_output=True,
+            text=True, encoding="utf-8", errors="replace")
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",
+                          result.stderr or "")
+        if not match:
+            return None
+        h, m, s = (float(g) for g in match.groups())
+        return h * 3600 + m * 60 + s
+    except Exception:
+        return None
 
 
 def format_timestamp(seconds):
@@ -102,7 +170,8 @@ def format_timestamp(seconds):
 def extract_audio(ffmpeg, video_path, audio_path, log):
     log("Extracting the audio track...")
     cmd = [ffmpeg, "-y", "-i", video_path, "-map", "a", "-ac", "2", "-q:a", "0", audio_path]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
     if result.returncode != 0:
         hint = ""
         text = (result.stderr or result.stdout or "")[-800:]
@@ -131,7 +200,7 @@ def transcribe(model, audio_path, log):
 
 # --- Translation engine (Argos Translate, offline after first download) ---
 
-TRANSLATIONS_DIR = os.path.join(APP_DIR, "translations")
+TRANSLATIONS_DIR = os.path.join(_DATA_DIR, "translations")
 
 
 def _ensure_argos_env():
@@ -227,11 +296,11 @@ def ensure_translation_legs(source_code, target_code, log):
     return legs
 
 
-def translate_entries(entries, source_code, target_code, log):
+def translate_entries(entries, source_code, target_code, log, progress=None):
     """Translate subtitle entries to the target language, keeping timestamps.
 
     entries: list of (start, end, text). Returns the same structure with
-    translated text.
+    translated text.  ``progress(label, fraction)`` is invoked per entry.
     """
     _ensure_argos_env()
     from argostranslate import translate as at
@@ -240,7 +309,12 @@ def translate_entries(entries, source_code, target_code, log):
     log("Translating {}: {} (subtitles may be reflowed during translation)...".format(
         target_code, route))
     translated_entries = []
-    for start, end, text in entries:
+    total = len(entries)
+    for i, (start, end, text) in enumerate(entries, start=1):
+        if progress is not None:
+            frac = i / total if total else 1.0
+            progress("Translating {} / {}".format(i, total),
+                     P_TRANSLATE_START + (P_TRANSLATE_END - P_TRANSLATE_START) * frac)
         out = text
         for f, t in legs:
             out = at.translate(out, f, t)
@@ -283,12 +357,17 @@ def _char_width(ch):
     return 2 if _is_wide_char(ch) else 1
 
 
-def build_entries(segments, max_width=42):
+def build_entries(segments, max_width=42, duration=None, progress=None):
     """Group the transcribed words into subtitle entries (start, end, text).
 
     Lines are sized by display width (a CJK character counts as two
     columns) instead of by word count, so space-less scripts produce
     readable lines too. CJK characters are joined without spaces.
+
+    ``segments`` is a lazy generator, so this function is where the actual
+    transcription CPU work happens.  When ``duration`` is known, a
+    ``progress(label, fraction)`` callback is invoked as segments are
+    consumed to report a real percentage.
     """
     entries = []
 
@@ -304,6 +383,13 @@ def build_entries(segments, max_width=42):
         return out
 
     for segment in segments:
+        if progress is not None:
+            if duration:
+                frac = min(segment.end / duration, 1.0)
+                progress("Transcribing {:.0%}".format(frac),
+                         P_TRANS_START + (P_TRANS_END - P_TRANS_START) * frac)
+            else:
+                progress("Transcribing...", P_TRANS_START)
         words = list(segment.words or [])
         if not words:
             continue
@@ -351,23 +437,27 @@ def write_srt(entries, srt_path, log):
     log("Subtitles written: {} entries".format(len(entries)))
 
 
-def process_video(video_path, srt_path, language, model_name, log, progress_task, auto_output=False):
+def process_video(video_path, srt_path, language, model_name, log, progress, auto_output=False):
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError(
             "FFmpeg was not found. It should be in the 'ffmpeg' folder next "
             "to this program, or installed on the system.")
+    os.environ["WHISPER_FFMPEG"] = ffmpeg
     log("FFmpeg found: {}".format(os.path.basename(ffmpeg)))
 
     temp_dir = tempfile.mkdtemp(prefix="whisper_sub_")
     audio_path = os.path.join(temp_dir, "audio.wav")
     srt_path = os.path.abspath(srt_path)
     try:
-        progress_task("Extracting audio")
+        progress("Extracting the audio track...", P_EXTRACT)
         extract_audio(ffmpeg, video_path, audio_path, log)
-        progress_task("Preparing model")
+        duration = get_audio_duration(ffmpeg, audio_path)
+
+        progress("Preparing the model...", P_MODEL)
         model = create_model(model_name, log)
-        progress_task("Transcribing")
+
+        progress("Transcribing... (takes a while)", P_TRANS_START)
         segments, detected_lang = transcribe(model, audio_path, log)
 
         # With "Auto-detect" name the output after the language that was
@@ -377,16 +467,17 @@ def process_video(video_path, srt_path, language, model_name, log, progress_task
             srt_path = "{}.{}.srt".format(base, detected_lang)
             log("Output name using the detected language: {}".format(os.path.basename(srt_path)))
 
-        progress_task("Building subtitles")
-        entries = build_entries(segments)
+        progress("Building subtitle entries...", P_BUILD)
+        entries = build_entries(segments, duration=duration, progress=progress)
 
         if language and language != detected_lang:
-            progress_task("Translating to {}".format(language))
-            entries = translate_entries(entries, detected_lang, language, log)
+            progress("Translating to {}...".format(language), P_TRANSLATE_START)
+            entries = translate_entries(entries, detected_lang, language,
+                                        log, progress=progress)
         elif language:
             log("The selected language ({}) matches the video language: no translation needed.".format(language))
 
-        progress_task("Writing subtitles")
+        progress("Writing the SRT file...", P_WRITE)
         write_srt(entries, srt_path, log)
         return srt_path
     finally:
@@ -417,7 +508,7 @@ def apply_dark_theme(root):
               foreground=[("disabled", MUTED)])
 
     style.configure("TLabel", background=BG, foreground=FG)
-    style.configure("Title.TLabel", font=("Segoe UI", 14, "bold"), foreground=FG, background=BG)
+    style.configure("Title.TLabel", font=(FONT_FAMILY, 14, "bold"), foreground=FG, background=BG)
     style.configure("Muted.TLabel", background=BG, foreground=MUTED)
 
     style.configure("TEntry", fieldbackground=PANEL, foreground=FG, insertcolor=FG,
@@ -452,7 +543,7 @@ def apply_dark_theme(root):
 class SubtitlerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Whisper Subtitler")
+        self.root.title("Whisper Subtitler v" + APP_VERSION)
         self.root.resizable(False, False)
         self.queue = queue.Queue()
         self.busy = False
@@ -463,59 +554,62 @@ class SubtitlerApp:
         main = ttk.Frame(root, padding=16)
         main.grid(sticky="nsew")
 
-        ttk.Label(main, text="Whisper Subtitler", style="Title.TLabel").grid(
+        self.queue.put(("log", "Whisper Subtitler v{} starting...".format(APP_VERSION)))
+
+        ttk.Label(main, text="Whisper Subtitler  v" + APP_VERSION, style="Title.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 2))
         ttk.Label(main, text="Generate .srt subtitles from any video file.",
                   style="Muted.TLabel").grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(0, 12))
+            row=1, column=0, columnspan=3, sticky="w", pady=(0, 12))
 
         # Video file
-        ttk.Label(main, text="Video file:").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Label(main, text="Video file:").grid(row=2, column=0, sticky="w", pady=3)
         self.video_var = tk.StringVar()
-        ttk.Entry(main, textvariable=self.video_var, width=52).grid(row=3, column=1, pady=3, sticky="we")
-        ttk.Button(main, text="Browse...", command=self.browse_video).grid(row=3, column=2, padx=(6, 0), pady=3)
+        ttk.Entry(main, textvariable=self.video_var, width=52).grid(row=2, column=1, pady=3, sticky="we")
+        ttk.Button(main, text="Browse...", command=self.browse_video).grid(row=2, column=2, padx=(6, 0), pady=3)
 
         # Output SRT
-        ttk.Label(main, text="Subtitle file:").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Label(main, text="Subtitle file:").grid(row=3, column=0, sticky="w", pady=3)
         self.output_var = tk.StringVar()
-        ttk.Entry(main, textvariable=self.output_var, width=52).grid(row=4, column=1, pady=3, sticky="we")
-        ttk.Button(main, text="Browse...", command=self.browse_output).grid(row=4, column=2, padx=(6, 0), pady=3)
+        ttk.Entry(main, textvariable=self.output_var, width=52).grid(row=3, column=1, pady=3, sticky="we")
+        ttk.Button(main, text="Browse...", command=self.browse_output).grid(row=3, column=2, padx=(6, 0), pady=3)
 
         # Language (subtitle output language)
-        ttk.Label(main, text="Subtitle language:").grid(row=5, column=0, sticky="w", pady=3)
+        ttk.Label(main, text="Subtitle language:").grid(row=4, column=0, sticky="w", pady=3)
         self.language_var = tk.StringVar(value="English")
         self.language_combo = ttk.Combobox(
             main, textvariable=self.language_var, state="readonly", width=50,
             values=[label for label, _ in LANGUAGES])
-        self.language_combo.grid(row=5, column=1, columnspan=2, sticky="w", pady=3)
+        self.language_combo.grid(row=4, column=1, columnspan=2, sticky="w", pady=3)
         self.language_combo.bind("<<ComboboxSelected>>", self._on_language_changed)
 
         # Model
-        ttk.Label(main, text="Model:").grid(row=6, column=0, sticky="w", pady=3)
+        ttk.Label(main, text="Model:").grid(row=5, column=0, sticky="w", pady=3)
         self.model_var = tk.StringVar(value=MODELS[2][0])
         self.model_combo = ttk.Combobox(
             main, textvariable=self.model_var, state="readonly", width=50,
             values=[label for label, _ in MODELS])
-        self.model_combo.grid(row=6, column=1, columnspan=2, sticky="w", pady=3)
+        self.model_combo.grid(row=5, column=1, columnspan=2, sticky="w", pady=3)
 
         # Generate button
         self.generate_btn = ttk.Button(main, text="Generate SRT subtitles", command=self.start)
-        self.generate_btn.grid(row=7, column=0, columnspan=3, sticky="we", pady=(12, 6))
+        self.generate_btn.grid(row=6, column=0, columnspan=3, sticky="we", pady=(12, 6))
 
         # Progress
-        self.progress = ttk.Progressbar(main, mode="indeterminate", length=560)
-        self.progress.grid(row=8, column=0, columnspan=3, sticky="we", pady=3)
+        self.progress = ttk.Progressbar(main, mode="determinate", maximum=100,
+                                        value=0, length=560)
+        self.progress.grid(row=7, column=0, columnspan=3, sticky="we", pady=3)
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(main, textvariable=self.status_var).grid(row=9, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(main, textvariable=self.status_var).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
         # Log
         self.log_text = tk.Text(main, width=72, height=14, state="disabled", wrap="word",
                                 bg=LOG_BG, fg=LOG_FG, insertbackground=FG,
                                 selectbackground=ACCENT, selectforeground="#ffffff",
                                 relief="flat", borderwidth=0, padx=8, pady=8)
-        self.log_text.grid(row=10, column=0, columnspan=3, sticky="we")
+        self.log_text.grid(row=9, column=0, columnspan=3, sticky="we")
         scroll = ttk.Scrollbar(main, command=self.log_text.yview)
-        scroll.grid(row=10, column=3, sticky="ns")
+        scroll.grid(row=9, column=3, sticky="ns")
         self.log_text.configure(yscrollcommand=scroll.set)
 
         self.root.columnconfigure(0, weight=1)
@@ -528,6 +622,14 @@ class SubtitlerApp:
 
     def status(self, text):
         self.queue.put(("status", text))
+
+    def report_progress(self, label, fraction):
+        """Queue a status update plus a determinate progress percentage."""
+        self.status(label)
+        try:
+            self.queue.put(("progress", int(round(min(max(fraction, 0.0), 1.0) * 100))))
+        except Exception:  # noqa: BLE001 - never let a progress update break the worker
+            pass
 
     def done(self, srt_path):
         self.queue.put(("done", srt_path))
@@ -605,7 +707,7 @@ class SubtitlerApp:
 
         self.busy = True
         self.generate_btn.config(state="disabled")
-        self.progress.start(12)
+        self.progress["value"] = 0
         self.log_text.config(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
@@ -619,10 +721,23 @@ class SubtitlerApp:
 
     def worker(self, video, output, language, model_name, auto_output):
         try:
-            final = process_video(video, output, language, model_name, self.log, lambda task: self.status(task),
-                                  auto_output=auto_output)
+            final = process_video(video, output, language, model_name, self.log,
+                                  self.report_progress, auto_output=auto_output)
             self.done(final)
         except Exception as exc:  # noqa: BLE001 - report all errors to the user
+            # Persist the full traceback so failures can be diagnosed without
+            # guessing (the on-screen message only shows str(exc)).
+            try:
+                import traceback
+                import datetime
+                _err_log = os.path.join(_DATA_DIR, "error.log")
+                with open(_err_log, "a", encoding="utf-8") as _f:
+                    _f.write("\n[{:%Y-%m-%d %H:%M:%S}] {}\n".format(
+                        datetime.datetime.now(), video))
+                    _f.write(traceback.format_exc())
+                self.log("Detailed error saved to: " + _err_log)
+            except Exception:  # noqa: BLE001 - never break error reporting
+                pass
             self.fail(str(exc))
 
     def finish_ui(self):
@@ -639,8 +754,11 @@ class SubtitlerApp:
                     self.append_log(payload)
                 elif kind == "status":
                     self.status_var.set(payload)
+                elif kind == "progress":
+                    self.progress["value"] = payload
                 elif kind == "done":
                     self.finish_ui()
+                    self.progress["value"] = self.progress["maximum"]
                     self.status_var.set("Completed.")
                     self.append_log("Done! Subtitles saved to: " + payload)
                     messagebox.showinfo("Completed",
@@ -672,9 +790,11 @@ def show_splash():
     frame = tk.Frame(splash, bg=BG, padx=50, pady=36)
     frame.pack()
     tk.Label(frame, text="Whisper Subtitler",
-             font=("Segoe UI", 22, "bold"), bg=BG, fg=FG).pack()
+             font=(FONT_FAMILY, 22, "bold"), bg=BG, fg=FG).pack()
+    tk.Label(frame, text="v" + APP_VERSION,
+             font=(FONT_FAMILY, 11, "bold"), bg=BG, fg=GOLD).pack(pady=(0, 2))
     tk.Label(frame, text="Generate .srt subtitles from your videos",
-             font=("Segoe UI", 10), bg=BG, fg=MUTED).pack(pady=(4, 20))
+             font=(FONT_FAMILY, 10), bg=BG, fg=MUTED).pack(pady=(2, 20))
 
     splash.update_idletasks()
     width = splash.winfo_reqwidth()

@@ -1,6 +1,7 @@
 # Import the required libraries. Replaced `whisper` with `faster_whisper`
 import time
 import argparse
+import re
 from faster_whisper import WhisperModel
 from datetime import timedelta
 import subprocess
@@ -36,6 +37,21 @@ def extract_audio(video_path, audio_path):
     ]
     subprocess.run(command, check=True)
     print(f"Audio extraction completed. Audio file saved to: {audio_path}")
+
+def get_audio_duration(audio_path):
+    """Return the media duration in seconds, or *None* on failure."""
+    try:
+        result = subprocess.run(["ffmpeg", "-i", audio_path],
+                                capture_output=True, text=True)
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",
+                          result.stderr or "")
+        if not match:
+            return None
+        h, m, s = (float(g) for g in match.groups())
+        return h * 3600 + m * 60 + s
+    except Exception:
+        return None
+
 
 def format_timestamp(seconds):
     """Formats seconds into SRT timestamp format (HH:MM:SS,ms)."""
@@ -114,18 +130,21 @@ def build_line(parts):
     return out
 
 
-def write_srt(segments, srt_path, max_width=42):
+def write_srt(segments, srt_path, max_width=42, duration=None):
     print("Writing SRT file with word-level timestamps...")
     
     # faster-whisper returns segments in a slightly different way.
     # The output is a generator, so your `for` loop will work,
     # but the internal segment structure is different.
     # We adapt the writing logic to the new structure.
-    with open(srt_path, 'w') as srt_file:
+    with open(srt_path, 'w', encoding='utf-8') as srt_file:
         segment_idx = 1
         
         # `segments` is a generator, so we iterate over it
         for segment in segments:
+            if duration:
+                frac = min(segment.end / duration, 1.0)
+                print(f"\rTranscribing... {frac*100:3.0f}%", end="", flush=True)
             # faster-whisper segments have a `words` attribute directly
             if not segment.words:
                 continue
@@ -178,13 +197,16 @@ def write_srt(segments, srt_path, max_width=42):
                     line_end = None
                     line_width = 0
 
+    if duration:
+        print()
     print(f"SRT file written to {srt_path}.")
 
 def main(video_path, srt_path, language='en', model_name='small', audio_path='audio.mp3'):
     extract_audio(video_path, audio_path)
+    duration = get_audio_duration(audio_path)
     segments = transcribe_audio(audio_path, language=language, model_name=model_name)
     if segments:
-        write_srt(segments, srt_path)
+        write_srt(segments, srt_path, duration=duration)
     else:
         print("No text segments found. Check the audio or the transcription parameters.")
     os.remove(audio_path)
