@@ -68,7 +68,8 @@ The build fully runs on a Debian machine. Requirements:
 - `curl`, `unzip`
 - `x86_64-w64-mingw32-gcc` (mingw-w64)
 - `python3` with pip
-- `wine` (to extract Tcl/Tk from the official `tcltk.msi`)
+- `msitools` (`msiextract`) to unpack Tcl/Tk from the official `tcltk.msi`;
+  `wine` is used as a fallback when `msiextract` is not installed
 - `makensis` + NSIS data files (`nsis`, `nsis-common` Debian packages, or the
   extracted files with `NSISDIR` pointing at the `usr/share/nsis` folder) to
   build the installer; if missing, the installer is skipped

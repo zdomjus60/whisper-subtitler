@@ -192,39 +192,69 @@ Notes
 EOF
 
 echo "==> [7/7] Adding tkinter (Tcl/Tk) to embedded Python"
-if command -v wine >/dev/null 2>&1; then
-    TCLTK_MSI="$WORK/tcltk.msi"
-    if [ ! -f "$TCLTK_MSI" ]; then
-        curl -L --fail --retry 3 -o "$TCLTK_MSI" \
-            "https://www.python.org/ftp/python/${PY_VER}/amd64/tcltk.msi"
-    fi
+TCLTK_MSI="$WORK/tcltk.msi"
+if [ ! -f "$TCLTK_MSI" ]; then
+    curl -L --fail --retry 3 -o "$TCLTK_MSI" \
+        "https://www.python.org/ftp/python/${PY_VER}/amd64/tcltk.msi"
+fi
+
+# Extract tcltk.msi. Prefer msiextract (msitools): it is deterministic and
+# works headless, unlike wine msiexec which needs an X server and is flaky in
+# containers. Fall back to wine for machines that only have it.
+TCLTK_OUT="$WORK/tcltk_extract"
+rm -rf "$TCLTK_OUT"
+mkdir -p "$TCLTK_OUT"
+if command -v msiextract >/dev/null 2>&1; then
+    echo "    extracting tcltk.msi with msiextract"
+    TCLTK_MSI_ABS="$(cd "$(dirname "$TCLTK_MSI")" && pwd)/$(basename "$TCLTK_MSI")"
+    ( cd "$TCLTK_OUT" && msiextract "$TCLTK_MSI_ABS" >/dev/null )
+    TCLTK_ROOT="$TCLTK_OUT"
+elif command -v wine >/dev/null 2>&1; then
+    echo "    extracting tcltk.msi with wine"
     TCLTK_MSI_WIN_PATH="Z:$(echo "$PWD" | sed 's|/|\\|g')\\build\\tcltk.msi"
-    TCLTK_OUT="$WORK/tcltk_extract"
-    rm -rf "$TCLTK_OUT"
-    mkdir -p "$TCLTK_OUT"
     WINEDEBUG=-all wine msiexec /a "$TCLTK_MSI_WIN_PATH" /qn "TARGETDIR=C:\\tcltk_extract" >/dev/null 2>&1
-    TCLTK_WINE_DIR="${WINEPREFIX:-$HOME/.wine}/drive_c/tcltk_extract"
-    if [ -d "$TCLTK_WINE_DIR" ]; then
-        cp "$TCLTK_WINE_DIR/DLLs/_tkinter.pyd"    "$STAGE/python/"
-        cp "$TCLTK_WINE_DIR/DLLs/tcl86t.dll"      "$STAGE/python/"
-        cp "$TCLTK_WINE_DIR/DLLs/tk86t.dll"       "$STAGE/python/"
-        cp -r "$TCLTK_WINE_DIR/Lib/tkinter"       "$STAGE/python/Lib/tkinter"
-        rm -rf "$STAGE/python/Lib/tkinter/test"
-        mkdir -p "$STAGE/python/tcl"
-        cp -r "$TCLTK_WINE_DIR/tcl/tcl8.6" "$STAGE/python/tcl/tcl8.6"
-        cp -r "$TCLTK_WINE_DIR/tcl/tk8.6"  "$STAGE/python/tcl/tk8.6"
-        rm -rf "$STAGE/python/tcl/tk8.6/demos" "$STAGE/python/tcl/tk8.6/images/demos" 2>/dev/null || true
-        # remove the wine-extracted layout from drive_c to keep things clean
-        rm -rf "$TCLTK_WINE_DIR"
-        echo "    tkinter + Tcl/Tk runtime installed"
-    else
-        echo "ERROR: wine msiexec failed to extract tcltk.msi." >&2
-        exit 1
-    fi
+    TCLTK_ROOT="${WINEPREFIX:-$HOME/.wine}/drive_c/tcltk_extract"
 else
-    echo "ERROR: wine is required to bundle tkinter. Install wine on the build machine." >&2
+    echo "ERROR: neither msiextract nor wine is available to extract tcltk.msi." >&2
+    echo "       Install msitools (msiextract) or wine on the build machine." >&2
     exit 1
 fi
+
+[ -d "$TCLTK_ROOT" ] || { echo "ERROR: tcltk.msi extraction failed ($TCLTK_ROOT)." >&2; exit 1; }
+
+# Locate the components wherever the extractor placed them, so the same code
+# works for both the msiextract and the wine layouts. `-print -quit` stops at
+# the first match without a `| head` pipe (which would trip `pipefail`).
+TCLTK_PYD="$(find "$TCLTK_ROOT" -name '_tkinter.pyd' -print -quit)"
+TCLTK_TCL_DLL="$(find "$TCLTK_ROOT" -name 'tcl86t.dll' -print -quit)"
+TCLTK_TK_DLL="$(find "$TCLTK_ROOT" -name 'tk86t.dll' -print -quit)"
+TCLTK_TKINTER_INIT="$(find "$TCLTK_ROOT" -path '*/tkinter/__init__.py' -print -quit)"
+TCLTK_TKINTER_DIR=""
+if [ -n "$TCLTK_TKINTER_INIT" ]; then
+    TCLTK_TKINTER_DIR="$(dirname "$TCLTK_TKINTER_INIT")"
+fi
+TCLTK_TCL_DIR="$(find "$TCLTK_ROOT" -type d -name 'tcl8.6' -print -quit)"
+TCLTK_TK_DIR="$(find "$TCLTK_ROOT" -type d -name 'tk8.6' -print -quit)"
+
+for _component in "$TCLTK_PYD" "$TCLTK_TCL_DLL" "$TCLTK_TK_DLL" \
+                  "$TCLTK_TKINTER_DIR" "$TCLTK_TCL_DIR" "$TCLTK_TK_DIR"; do
+    if [ -z "$_component" ] || [ ! -e "$_component" ]; then
+        echo "ERROR: missing tkinter component (last searched: '${_component:-none}')." >&2
+        exit 1
+    fi
+done
+
+cp "$TCLTK_PYD"     "$STAGE/python/"
+cp "$TCLTK_TCL_DLL" "$STAGE/python/"
+cp "$TCLTK_TK_DLL"  "$STAGE/python/"
+cp -r "$TCLTK_TKINTER_DIR" "$STAGE/python/Lib/tkinter"
+rm -rf "$STAGE/python/Lib/tkinter/test"
+mkdir -p "$STAGE/python/tcl"
+cp -r "$TCLTK_TCL_DIR" "$STAGE/python/tcl/tcl8.6"
+cp -r "$TCLTK_TK_DIR"  "$STAGE/python/tcl/tk8.6"
+rm -rf "$STAGE/python/tcl/tk8.6/demos" "$STAGE/python/tcl/tk8.6/images/demos" 2>/dev/null || true
+rm -rf "$TCLTK_OUT"
+echo "    tkinter + Tcl/Tk runtime installed"
 
 echo "==> Zipping package"
 rm -f "$ZIP_OUT"
