@@ -38,11 +38,8 @@ jobs:
 
             # Wine needs an X server even for a silent msiexec extraction
             # (used to unpack tcltk.msi). Provide a transparent wrapper so
-            # build_package.sh can call "wine" / "winepath" normally.
-            cat > /usr/local/bin/wine << "WRAP"
-#!/bin/sh
-exec xvfb-run -a /usr/bin/wine "$@"
-WRAP
+            # build_package.sh can call "wine" normally.
+            printf "#!/bin/sh\nexec xvfb-run -a /usr/bin/wine \"\$@\"\n" > /usr/local/bin/wine
             chmod +x /usr/local/bin/wine
 
             export WINEARCH=win64
