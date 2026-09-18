@@ -26,22 +26,32 @@ jobs:
 
       - name: Build package in Debian (mingw-w64 + wine + NSIS)
         run: |
-          docker run --rm -v "$PWD:/work" -w /work debian:bookworm bash -eu -c '
+          docker run --rm -v "$PWD:/work" -w /work debian:bookworm bash -euxo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
             dpkg --add-architecture i386
             apt-get update
-            apt-get install -y --no-install-recommends \
+            apt-get install -y \
               ca-certificates curl unzip file \
               mingw-w64 nsis nsis-common \
               python3 python3-pip \
-              wine xvfb
+              wine xvfb xauth
 
             # Wine needs an X server even for a silent msiexec extraction
-            # (used to unpack tcltk.msi). Wrap it so build_package.sh can call
-            # "wine" normally.
-            wine() { xvfb-run -a /usr/bin/wine "$@"; }
-            export -f wine
+            # (used to unpack tcltk.msi). Provide a transparent wrapper so
+            # build_package.sh can call "wine" / "winepath" normally.
+            cat > /usr/local/bin/wine << "WRAP"
+#!/bin/sh
+exec xvfb-run -a /usr/bin/wine "$@"
+WRAP
+            chmod +x /usr/local/bin/wine
+
+            export WINEARCH=win64
             export WINEDEBUG=-all
             export WINEDLLOVERRIDES="mscoree,mshtml="
+
+            echo "== wine diagnostics =="
+            xvfb-run -a /usr/bin/wine --version
+            xvfb-run -a /usr/bin/wineboot -u || true
 
             ./build_package.sh
           '
