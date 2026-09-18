@@ -1,0 +1,64 @@
+name: Build Windows package
+
+# Builds the portable Windows app + NSIS installer with the same
+# build_package.sh used on a local Debian machine, but inside a Debian
+# container so it can run in CI. Produces WhisperSubtitler_Setup.exe and
+# WhisperSubtitler.zip; if a release tag is given they are attached to it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the built assets to (optional, e.g. v2.0)"
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build package in Debian (mingw-w64 + wine + NSIS)
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work debian:bookworm bash -eu -c '
+            dpkg --add-architecture i386
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              ca-certificates curl unzip file \
+              mingw-w64 nsis nsis-common \
+              python3 python3-pip \
+              wine xvfb
+
+            # Wine needs an X server even for a silent msiexec extraction
+            # (used to unpack tcltk.msi). Wrap it so build_package.sh can call
+            # "wine" normally.
+            wine() { xvfb-run -a /usr/bin/wine "$@"; }
+            export -f wine
+            export WINEDEBUG=-all
+            export WINEDLLOVERRIDES="mscoree,mshtml="
+
+            ./build_package.sh
+          '
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhisperSubtitler-windows
+          path: |
+            WhisperSubtitler_Setup.exe
+            WhisperSubtitler.zip
+          if-no-files-found: warn
+
+      - name: Attach assets to release
+        if: ${{ (github.event_name == 'release') || (github.event.inputs.tag != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" WhisperSubtitler_Setup.exe WhisperSubtitler.zip --clobber
