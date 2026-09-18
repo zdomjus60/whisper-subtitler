@@ -50,6 +50,17 @@ jobs:
             xvfb-run -a /usr/bin/wine --version
             xvfb-run -a /usr/bin/wineboot -u || true
 
+            echo "== DEBUG tcltk.msi =="
+            curl -fsSL -o /tmp/tcltk.msi "https://www.python.org/ftp/python/3.11.9/amd64/tcltk.msi"
+            apt-get install -y msitools >/dev/null 2>&1 || true
+            rm -rf /tmp/msi && mkdir -p /tmp/msi
+            ( cd /tmp/msi && msiextract /tmp/tcltk.msi ) || echo "msiextract exit=$?"
+            echo "-- msiextract tree (top) --"
+            find /tmp/msi -maxdepth 3 2>/dev/null | head -60 || true
+            echo "-- wine msiexec attempt --"
+            xvfb-run -a /usr/bin/wine msiexec /a "Z:\\tmp\\tcltk.msi" /qn "TARGETDIR=C:\\tcltk_extract" || echo "msiexec exit=$?"
+            find /root/.wine/drive_c/tcltk_extract -maxdepth 3 2>/dev/null | head -60 || true
+
             ./build_package.sh
           '
 
