@@ -5,9 +5,11 @@ optimized for CPU. Available as:
 
 - a command-line Python script (`whisper_subtitler.py`) for Debian/Linux,
 - a ready-to-run **portable Windows app** (`WhisperSubtitler.exe`) bundled with
-  Python, ffmpeg and faster-whisper, ready for non-technical users, and
+  Python, ffmpeg and faster-whisper, ready for non-technical users,
 - a ready-to-run **macOS app** (`Whisper Subtitler.app` / `.dmg`) bundled with
-  Python, ffmpeg and faster-whisper for macOS 10.15+ (Intel).
+  Python, ffmpeg and faster-whisper for macOS 10.15+ (Intel), and
+- a ready-to-run **Linux AppImage** (`WhisperSubtitler_Linux.AppImage`), a
+  single self-contained executable for any glibc Linux desktop.
 
 ---
 
@@ -173,3 +175,43 @@ The script patches `argostranslate` (lazy stanza import) and `faster_whisper`
 ad-hoc codesigns the bundle. See `mac/setup.py` for the exact py2app options
 and the list of dependencies that must be declared explicitly (py2app does not
 follow lazy/conditional pure-Python imports).
+
+---
+
+## Part 4 — Linux AppImage (all-in-one)
+
+A self-contained **`WhisperSubtitler_Linux.AppImage`** (~145 MB) built with
+PyInstaller on Debian/Ubuntu: double-click it and the GUI runs exactly like the
+Windows and macOS apps. It bundles Python 3, tkinter, faster-whisper (ffmpeg
+decoding, no PyAV), Argos Translate (without Stanza, with MiniSBD sentence
+splitting) and a static `ffmpeg`.
+
+### End-user experience
+
+1. Download `WhisperSubtitler_Linux.AppImage`, make it executable
+   (`chmod +x WhisperSubtitler_Linux.AppImage`) and double-click it.
+2. Pick the video, the subtitle language and the model, then generate the
+   `.srt`, exactly like the Windows and macOS apps.
+
+Runtime data (Whisper models and Argos packages) is stored in
+`~/.local/share/Whisper Subtitler/` and downloaded on first use, so the
+AppImage stays read-only and works from any folder. A full traceback of any
+failure is written to `~/.local/share/Whisper Subtitler/error.log`.
+
+Requirements: **any glibc Linux desktop** with a display and internet on the
+first run (glibc ≥ the version the AppImage was built on; a Debian 13 build
+needs glibc 2.41+, i.e. Debian 13 / Ubuntu 25.10+).
+
+### Building (on Debian/Ubuntu)
+
+```bash
+tools/build_linux.sh
+```
+
+Requirements: `curl`, `unzip`, `python3` with `venv` + `python3-tk`,
+`mksquashfs` (squashfs-tools), internet. Output: `WhisperSubtitler_Linux.AppImage`.
+
+The script downloads a static `ffmpeg` (johnvansickle.com) and AppImage tooling,
+patches `argostranslate` (lazy stanza import, always-enable MiniSBD), and uses
+PyInstaller to bundle everything into one folder that is then wrapped in the
+AppImage. To support older distros, build on an older base like Debian 12.

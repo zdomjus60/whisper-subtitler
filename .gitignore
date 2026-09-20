@@ -51,6 +51,10 @@ mac/.venv-mac/
 *.dmg
 .DS_Store
 
+# --- Build artifacts (Linux AppImage) ---
+build_linux/
+*.AppImage
+
 # --- Whisper models (downloaded at runtime) ---
 models/
 

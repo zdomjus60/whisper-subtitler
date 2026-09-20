@@ -47,6 +47,15 @@ if sys.platform == "darwin":
     _DATA_DIR = os.path.join(
         os.path.expanduser("~"), "Library", "Application Support", "Whisper Subtitler")
     os.makedirs(_DATA_DIR, exist_ok=True)
+elif getattr(sys, "frozen", False) and sys.platform == "linux":
+    # PyInstaller bundle: the app folder is mounted read-only inside an
+    # AppImage, so keep runtime data (models, translations) in the user's
+    # home instead (XDG base dirs).
+    APP_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    _DATA_DIR = os.path.join(
+        os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")),
+        "Whisper Subtitler")
+    os.makedirs(_DATA_DIR, exist_ok=True)
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     _DATA_DIR = APP_DIR
@@ -60,6 +69,21 @@ def default_dialogs_dir():
     Without this the file dialogs open on the last folder used by Windows,
     which confuses non-technical users.
     """
+    if sys.platform != "win32":
+        # Honor localized desktop names via xdg-user-dirs (e.g. "Scrivania"
+        # on Italian locales).
+        try:
+            with open(os.path.join(os.path.expanduser("~"), ".config", "user-dirs.dirs"),
+                      encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("XDG_DESKTOP_DIR="):
+                        value = line.split("=", 1)[1].strip().strip('"')
+                        value = value.replace("$HOME", os.path.expanduser("~"))
+                        if os.path.isdir(value):
+                            return value
+        except OSError:
+            pass
     desktop = os.path.join(os.path.expanduser("~"), "Desktop")
     if os.path.isdir(desktop):
         return desktop
@@ -81,7 +105,12 @@ ACCENT_ACTIVE = "#7aa2f7"
 ACCENT_DISABLED = "#3a558f"
 GOLD = "#e6b84c"
 
-FONT_FAMILY = "Helvetica Neue" if sys.platform == "darwin" else "Segoe UI"
+if sys.platform == "darwin":
+    FONT_FAMILY = "Helvetica Neue"
+elif sys.platform == "linux":
+    FONT_FAMILY = "DejaVu Sans"
+else:
+    FONT_FAMILY = "Segoe UI"
 
 os.environ.setdefault("HUGGINGFACE_HUB_DISABLE_PROGRESS_BARS", "1")
 
