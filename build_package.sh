@@ -79,7 +79,7 @@ python3 -m pip download \
     --implementation cp \
     --only-binary=:all: \
     --no-deps \
-    argostranslate minisbd sacremoses sentencepiece regex joblib
+    argostranslate minisbd sacremoses sentencepiece regex joblib cloudpickle
 
 echo "==> [5/6] Installing wheels into embedded Python"
 SITE_PACKAGES="$STAGE/python/Lib/site-packages"

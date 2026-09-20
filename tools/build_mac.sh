@@ -54,7 +54,11 @@ source "$VENV/bin/activate"
 python -m pip install --upgrade pip setuptools wheel
 
 log "Installing transcription + translation + packaging dependencies"
-python -m pip install faster-whisper argostranslate py2app
+# joblib + cloudpickle are pulled in by sacremoses/joblib only at runtime
+# (lazy import), so py2app drops them unless they are explicit in setup.py,
+# and pip must have them in the venv for find_spec to bundle them. This is the
+# fix for the translation errors seen on Windows/Linux.
+python -m pip install faster-whisper argostranslate py2app joblib cloudpickle
 
 log "Checking tkinter"
 python -c 'import tkinter' \
@@ -76,6 +80,39 @@ new = "try:\n    import stanza\nexcept ImportError:\n    stanza = None\n"
 assert old in src, "argostranslate/sbd.py changed upstream"
 sbd.write_text(src.replace(old, new, 1), encoding="utf-8")
 print("  patched argostranslate/sbd.py (stanza import guarded)")
+PYEOF
+
+# 1b) argostranslate/translate.py must never pick the Stanza sentence splitter:
+#     recent Argos packages bundle a stanza model inside the package, so
+#     pkg.packaged_sbd_path points at it and StanzaSentencizer gets selected,
+#     which crashes (stanza is not bundled -> AttributeError NoneType.Pipeline).
+#     Force MiniSBD in every branch. Mirrors the Windows/Linux patch.
+python - <<'PYEOF'
+from pathlib import Path
+import sysconfig
+root = Path(sysconfig.get_paths()["purelib"])
+p = root / "argostranslate" / "translate.py"
+src = p.read_text(encoding="utf-8")
+grade = False
+old = """            if "stanza" in str(pkg.packaged_sbd_path):
+                Sentencizer = StanzaSentencizer
+            elif "minisbd" in str(pkg.packaged_sbd_path):"""
+new = """            if "minisbd" in str(pkg.packaged_sbd_path):"""
+if old in src:
+    src = src.replace(old, new, 1)
+    grade = True
+old2 = """        elif settings.chunk_type == settings.ChunkType.STANZA:
+            Sentencizer = StanzaSentencizer"""
+new2 = """        elif settings.chunk_type == settings.ChunkType.STANZA:
+            Sentencizer = MiniSBDSentencizer"""
+if old2 in src:
+    src = src.replace(old2, new2, 1)
+    grade = True
+if grade:
+    p.write_text(src, encoding="utf-8")
+    print("  patched argostranslate/translate.py (Stanza -> MiniSBD)")
+else:
+    print("  argostranslate/translate.py: already patched or pattern changed")
 PYEOF
 
 # 2) faster-whisper normally decodes audio with PyAV, but PyAV macOS x86_64

@@ -47,7 +47,7 @@ python -m pip install faster-whisper pyinstaller
 
 log "Installing Argos Translate WITHOUT stanza/spacy (avoids torch ~2GB)"
 python -m pip install --no-deps argostranslate
-python -m pip install minisbd "sacremoses<0.2" "sentencepiece<0.3,>=0.2.0" regex joblib packaging
+python -m pip install minisbd "sacremoses<0.2" "sentencepiece<0.3,>=0.2.0" regex joblib cloudpickle packaging
 
 log "Patching argostranslate (lazy stanza import, MiniSBD always)"
 SITE_PACKAGES="$VENV/lib/python$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')/site-packages"
@@ -137,6 +137,8 @@ python -m PyInstaller \
     --collect-all faster_whisper \
     --collect-all argostranslate \
     --collect-all minisbd \
+    --hidden-import joblib \
+    --hidden-import cloudpickle \
     --icon "$WORK/whisper-subtitler.png" \
     "$WORK/whisper_gui.py"
 DIST="$WORK/dist/$APP_NAME"

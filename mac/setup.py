@@ -67,6 +67,8 @@ OPTIONAL = [
     "minisbd",
     "sentencepiece",
     "sacremoses",
+    "joblib",
+    "cloudpickle",
     "google",
     "protobuf",
     "onnxruntime",
